@@ -1,200 +1,204 @@
-// Global variables
-let autoRefreshInterval;
-let lastRefreshTime = null;
-
 // DOM elements
-const messagesTable = document.getElementById('messages-table');
-const messagesTbody = document.getElementById('messages-tbody');
-const loadingDiv = document.getElementById('loading');
-const emptyStateDiv = document.getElementById('empty-state');
-const errorContainer = document.getElementById('error-container');
-const lastUpdatedSpan = document.getElementById('last-updated');
-const autoRefreshStatusSpan = document.getElementById('auto-refresh-status');
-const refreshBtn = document.getElementById('refresh-btn');
+const textInput = document.getElementById('textInput');
+const extractBtn = document.getElementById('extractBtn');
+const loading = document.getElementById('loading');
+const resultsSection = document.getElementById('resultsSection');
+const resultsContent = document.getElementById('resultsContent');
+const totalRuns = document.getElementById('totalRuns');
+const successRate = document.getElementById('successRate');
+const avgLatency = document.getElementById('avgLatency');
 
-// Initialize the app
-document.addEventListener('DOMContentLoaded', function() {
-    console.log('VoiceTriage frontend initialized');
-    refreshMessages();
-    startAutoRefresh();
+// Event listeners
+extractBtn.addEventListener('click', handleExtract);
+textInput.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.key === 'Enter') {
+        handleExtract();
+    }
 });
 
-// Fetch and display messages
-async function refreshMessages() {
+// Load stats on page load
+document.addEventListener('DOMContentLoaded', loadStats);
+
+async function handleExtract() {
+    const text = textInput.value.trim();
+    
+    if (!text) {
+        alert('Please enter some text to extract.');
+        return;
+    }
+    
+    // Show loading state
+    setLoading(true);
+    hideResults();
+    
     try {
-        // Show loading state
-        showLoading();
-        hideError();
-        
-        // Disable refresh button during fetch
-        refreshBtn.disabled = true;
-        refreshBtn.textContent = '🔄 Loading...';
-        
-        // Fetch messages from API
-        const response = await fetch('/api/messages');
+        const response = await fetch('/api/extract', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ text })
+        });
         
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
         
-        const messages = await response.json();
-        
-        // Update last refresh time
-        lastRefreshTime = new Date();
-        updateStatusDisplay();
-        
-        // Render messages
-        if (messages.length === 0) {
-            showEmptyState();
-        } else {
-            renderMessages(messages);
-        }
-        
-        console.log(`Loaded ${messages.length} messages`);
+        const result = await response.json();
+        displayResults(result);
+        await loadStats(); // Refresh stats after extraction
         
     } catch (error) {
-        console.error('Error fetching messages:', error);
-        showError(`Failed to load messages: ${error.message}`);
-        showEmptyState();
+        console.error('Extraction failed:', error);
+        displayError('Extraction failed. Please try again.');
     } finally {
-        // Re-enable refresh button
-        refreshBtn.disabled = false;
-        refreshBtn.textContent = '🔄 Refresh Now';
-        hideLoading();
+        setLoading(false);
     }
 }
 
-// Render messages in the table
-function renderMessages(messages) {
-    // Clear existing content
-    messagesTbody.innerHTML = '';
+function displayResults(result) {
+    const { data, valid, errors, latency_ms, est_cost_usd } = result;
     
-    // Create table rows for each message
-    messages.forEach(message => {
-        const row = document.createElement('tr');
-        
-        // Format timestamp
-        const timestamp = new Date(message.created_at).toLocaleString();
-        
-        // Create category badge
-        const categoryBadge = createBadge(message.category, 'category');
-        
-        // Create urgency badge
-        const urgencyBadge = createBadge(message.urgency, 'urgency');
-        
-        // Set row content
-        row.innerHTML = `
-            <td>${timestamp}</td>
-            <td>${escapeHtml(message.from_number)}</td>
-            <td class="transcript" title="${escapeHtml(message.transcript)}">${escapeHtml(message.transcript)}</td>
-            <td>${categoryBadge.outerHTML}</td>
-            <td>${urgencyBadge.outerHTML}</td>
+    let html = `
+        <div class="result-card">
+            <div class="result-header">
+                <h3>Extracted Data</h3>
+                <span class="validity-badge ${valid ? 'valid' : 'invalid'}">
+                    ${valid ? 'Valid' : 'Invalid'}
+                </span>
+            </div>
+            
+            <div class="metrics">
+                <div class="metric">
+                    <span>⏱️</span>
+                    <span>${latency_ms}ms</span>
+                </div>
+                <div class="metric">
+                    <span>💰</span>
+                    <span>$${est_cost_usd.toFixed(4)}</span>
+                </div>
+            </div>
+    `;
+    
+    if (data) {
+        html += `
+            <div class="data-grid">
+                <div class="data-item">
+                    <div class="data-label">Customer</div>
+                    <div class="data-value">${escapeHtml(data.customer)}</div>
+                </div>
+                <div class="data-item">
+                    <div class="data-label">Email</div>
+                    <div class="data-value">${escapeHtml(data.email)}</div>
+                </div>
+                <div class="data-item">
+                    <div class="data-label">Category</div>
+                    <div class="data-value">
+                        <span class="category-badge ${data.category}">${data.category}</span>
+                    </div>
+                </div>
+                <div class="data-item">
+                    <div class="data-label">Urgency</div>
+                    <div class="data-value">
+                        <span class="urgency-badge ${data.urgency}">${data.urgency}</span>
+                    </div>
+                </div>
+                <div class="data-item" style="grid-column: 1 / -1;">
+                    <div class="data-label">Summary</div>
+                    <div class="data-value">${escapeHtml(data.summary)}</div>
+                </div>
+            </div>
         `;
-        
-        messagesTbody.appendChild(row);
-    });
+    }
     
-    // Show table and hide empty state
-    messagesTable.style.display = 'table';
-    emptyStateDiv.style.display = 'none';
+    if (errors && errors.length > 0) {
+        html += `
+            <div class="errors">
+                <h4>Validation Errors:</h4>
+                <ul class="error-list">
+                    ${errors.map(error => `<li>${escapeHtml(error)}</li>`).join('')}
+                </ul>
+            </div>
+        `;
+    }
+    
+    html += '</div>';
+    
+    resultsContent.innerHTML = html;
+    showResults();
 }
 
-// Create a badge element
-function createBadge(text, type) {
-    const badge = document.createElement('span');
-    badge.className = `${type}-badge ${type}-${text.toLowerCase()}`;
-    badge.textContent = text;
-    return badge;
-}
-
-// Show loading state
-function showLoading() {
-    loadingDiv.style.display = 'block';
-    messagesTable.style.display = 'none';
-    emptyStateDiv.style.display = 'none';
-}
-
-// Hide loading state
-function hideLoading() {
-    loadingDiv.style.display = 'none';
-}
-
-// Show empty state
-function showEmptyState() {
-    emptyStateDiv.style.display = 'block';
-    messagesTable.style.display = 'none';
-}
-
-// Show error message
-function showError(message) {
-    errorContainer.innerHTML = `
-        <div class="error">
-            <strong>Error:</strong> ${escapeHtml(message)}
+function displayError(message) {
+    resultsContent.innerHTML = `
+        <div class="result-card">
+            <div class="result-header">
+                <h3>Error</h3>
+                <span class="validity-badge invalid">Error</span>
+            </div>
+            <div class="errors">
+                <h4>Extraction Failed</h4>
+                <p>${escapeHtml(message)}</p>
+            </div>
         </div>
     `;
-    errorContainer.style.display = 'block';
+    showResults();
 }
 
-// Hide error message
-function hideError() {
-    errorContainer.style.display = 'none';
-}
-
-// Update status display
-function updateStatusDisplay() {
-    if (lastRefreshTime) {
-        lastUpdatedSpan.textContent = `Last updated: ${lastRefreshTime.toLocaleTimeString()}`;
+async function loadStats() {
+    try {
+        const response = await fetch('/api/stats');
+        if (response.ok) {
+            const stats = await response.json();
+            updateStatsDisplay(stats);
+        }
+    } catch (error) {
+        console.error('Failed to load stats:', error);
     }
 }
 
-// Start auto-refresh
-function startAutoRefresh() {
-    // Clear any existing interval
-    if (autoRefreshInterval) {
-        clearInterval(autoRefreshInterval);
-    }
-    
-    // Set new interval (10 seconds)
-    autoRefreshInterval = setInterval(() => {
-        refreshMessages();
-    }, 10000);
-    
-    console.log('Auto-refresh started (10 second interval)');
+function updateStatsDisplay(stats) {
+    totalRuns.textContent = stats.runs;
+    successRate.textContent = `${stats.success_rate_pct}%`;
+    avgLatency.textContent = `${stats.avg_latency_ms}ms`;
 }
 
-// Stop auto-refresh
-function stopAutoRefresh() {
-    if (autoRefreshInterval) {
-        clearInterval(autoRefreshInterval);
-        autoRefreshInterval = null;
-        console.log('Auto-refresh stopped');
+function setLoading(isLoading) {
+    if (isLoading) {
+        loading.style.display = 'block';
+        extractBtn.disabled = true;
+        extractBtn.textContent = 'Processing...';
+    } else {
+        loading.style.display = 'none';
+        extractBtn.disabled = false;
+        extractBtn.textContent = 'Extract →';
     }
 }
 
-// Utility function to escape HTML
+function showResults() {
+    resultsSection.classList.remove('hidden');
+    resultsSection.scrollIntoView({ behavior: 'smooth' });
+}
+
+function hideResults() {
+    resultsSection.classList.add('hidden');
+}
+
 function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
 }
 
-// Manual refresh function (called by button click)
-function manualRefresh() {
-    refreshMessages();
-}
-
-// Cleanup on page unload
-window.addEventListener('beforeunload', function() {
-    stopAutoRefresh();
+// Auto-resize textarea
+textInput.addEventListener('input', function() {
+    this.style.height = 'auto';
+    this.style.height = Math.max(150, this.scrollHeight) + 'px';
 });
 
-// Handle visibility change (pause refresh when tab is hidden)
-document.addEventListener('visibilitychange', function() {
-    if (document.hidden) {
-        stopAutoRefresh();
-        autoRefreshStatusSpan.textContent = 'Auto-refresh: Paused (tab hidden)';
-    } else {
-        startAutoRefresh();
-        autoRefreshStatusSpan.textContent = 'Auto-refresh: 10s';
+// Add some example text on double-click of placeholder
+textInput.addEventListener('dblclick', function() {
+    if (this.value === '') {
+        this.value = `Hi, my name is John Doe and my email is john@example.com. I'm experiencing a bug where the application crashes when I click the submit button. This is urgent and needs immediate attention.`;
+        this.dispatchEvent(new Event('input'));
     }
 });

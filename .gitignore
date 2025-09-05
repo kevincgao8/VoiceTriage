@@ -1,5 +1,10 @@
 .venv
-__pycache__/ 
+__pycache__/
 *.pyc
 .DS_Store
+.env
+
+# Environment files with secrets
+.envV2.example
+config.env
 .env
